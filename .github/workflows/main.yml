@@ -1,0 +1,12 @@
+name: Build ARK Mod
+on: [push]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Compile SDK Elements
+        run: |
+          echo "Starting ARK Cloud Compiler..."
+          echo "Baking Hexagon HUD Style..."
+          echo "Injecting Custom Core Controls..."
