@@ -1,0 +1,302 @@
+#include "PrimalGameData_ModDrive_BP.h"
+
+void UPrimalGameData_ModDrive_BP::InitAllDinosDynamicArray()
+{
+    UClass* ClassMaster = APrimalDinoCharacter::StaticClass();
+    TArray<UClass*> Array_AllDinosClasses = UGameplayStatics::GetEngineSubclasses(ClassMaster);
+
+    for (UClass* CurrentClass : Array_AllDinosClasses)
+    {
+        if (CurrentClass && CurrentClass->GetDefaultObject<APrimalDinoCharacter>()->DinoNameTag != "")
+        {
+            Widget_Menu->ScrollBox_Dinos->AddChild(CreateWidget(PlayerController, UI_DinoButton_Widget, CurrentClass));
+        }
+    }
+}
+
+void UPrimalGameData_ModDrive_BP::OnDinoSelected(UClass* TargetDinoClass)
+{
+    FVector SpawnLoc = PlayerHumanCharacter->GetActorLocation();
+    FRotator SpawnRot = PlayerHumanCharacter->GetActorRotation();
+
+    PlayerHumanCharacter->SetActorHiddenInGame(true);
+    PlayerHumanCharacter->SetActorEnableCollision(false);
+    PlayerHumanCharacter->bIsInvulnerable = true;
+
+    APrimalDinoCharacter* NewDinoPawn = GetWorld()->SpawnActor<APrimalDinoCharacter>(TargetDinoClass, SpawnLoc, SpawnRot);
+    PlayerController->Possess(NewDinoPawn);
+
+    CurrentControlledDino = NewDinoPawn;
+    InitializeFirstPersonCamera(CurrentControlledDino);
+}
+#include "UI_DinoCustomizer_Widget.h"
+
+void UUI_DinoCustomizer_Widget::OnMouseScrollUp()
+{
+    UCameraComponent* CameraComponent = CurrentControlledDino->FindComponentByClass<UCameraComponent>();
+    USpringArmComponent* SpringArmComponent = CurrentControlledDino->FindComponentByClass<USpringArmComponent>();
+
+    if (SpringArmComponent->TargetArmLength > 0.0f)
+    {
+        SpringArmComponent->TargetArmLength -= 30.0f;
+        if (SpringArmComponent->TargetArmLength <= 0.0f)
+        {
+            SpringArmComponent->TargetArmLength = 0.0f;
+            SpringArmComponent->bUsePawnControlRotation = true;
+            CameraComponent->AttachToComponent(CurrentControlledDino->GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, "head");
+            bIsFirstPersonView = true;
+        }
+    }
+}
+
+void UUI_DinoCustomizer_Widget::OnMouseScrollDown()
+{
+    UCameraComponent* CameraComponent = CurrentControlledDino->FindComponentByClass<UCameraComponent>();
+    USpringArmComponent* SpringArmComponent = CurrentControlledDino->FindComponentByClass<USpringArmComponent>();
+
+    if (bIsFirstPersonView)
+    {
+        CameraComponent->AttachToComponent(SpringArmComponent, FAttachmentTransformRules::KeepRelativeTransform);
+        bIsFirstPersonView = false;
+    }
+
+    if (SpringArmComponent->TargetArmLength < 400.0f)
+    {
+        SpringArmComponent->TargetArmLength += 30.0f;
+    }
+}
+#include "UI_DinoCustomizer_Widget.h"
+
+void UUI_DinoCustomizer_Widget::OnSliderMoved_HeadScale(float SliderValue)
+{
+    USkeletalMeshComponent* MeshComp = CurrentControlledDino->GetMesh();
+    MeshComp->SetBoneScaleByName("Head", FVector(SliderValue, SliderValue, SliderValue));
+}
+
+void UUI_DinoCustomizer_Widget::OnSliderMoved_TailScale(float SliderValue)
+{
+    USkeletalMeshComponent* MeshComp = CurrentControlledDino->GetMesh();
+    MeshComp->SetBoneScaleByName("Tail", FVector(SliderValue, SliderValue, SliderValue));
+}
+
+void UUI_DinoCustomizer_Widget::ApplyUniqueGlowZone(int32 TargetRegionIndex, float GlowIntensity, FLinearColor ChosenColor)
+{
+    UMaterialInstanceDynamic* DynamicMat = CurrentControlledDino->GetMesh()->CreateDynamicMaterialInstance(0);
+    FName ParameterGlowName = FName(*FString::Printf(TEXT("ColorRegion%d_Glow"), TargetRegionIndex));
+    
+    DynamicMat->SetScalarParameterValue(ParameterGlowName, GlowIntensity);
+    DynamicMat->SetScalarParameterValue("EmissiveBoost", GlowIntensity);
+    DynamicMat->SetVectorParameterValue("EmissiveColor", ChosenColor);
+    DynamicMat->SetVectorParameterValue("Bioluminescent_Color", ChosenColor);
+
+    if (GlowIntensity >= 5.0f)
+    {
+        CurrentControlledDino->bIsGlowCreature = true;
+    }
+}
+
+void UUI_DinoCustomizer_Widget::OnButton_SetGenderAndAge(bool bMakeFemale, bool bMakeBaby)
+{
+    CurrentControlledDino->TargetGender = bMakeFemale ? 1 : 0;
+    CurrentControlledDino->RefreshGenderVisuals();
+
+    if (bMakeBaby)
+    {
+        CurrentControlledDino->SetCharacterAge(0.05f);
+        CurrentControlledDino->SetActorScale3D(FVector(0.2f, 0.2f, 0.2f));
+    }
+}
+#include "DinoCharacterBP_GlobalMod.h"
+
+void ADinoCharacterBP_GlobalMod::OnLeftMouseClick_MeleeAttack()
+{
+    if (CurrentControlledDino && !CurrentControlledDino->bIsDead)
+    {
+        CurrentControlledDino->PlayAnimation("Attack_Primary", false);
+        CurrentControlledDino->PlaySound("Attack_Melee_Sound");
+
+        FVector TraceStart = CurrentControlledDino->GetActorLocation();
+        FVector TraceEnd = TraceStart + (CurrentControlledDino->GetActorForwardVector() * CurrentControlledDino->AttackRange);
+        FHitResult HitResult;
+
+        if (GetWorld()->LineTraceSingleByChannel(HitResult, TraceStart, TraceEnd, ECC_Pawn))
+        {
+            AActor* HitActor = HitResult.GetActor();
+            if (HitActor && HitActor != CurrentControlledDino)
+            {
+                float DamageAmount = CurrentControlledDino->BaseDamage * CurrentControlledDino->DamageMultiplier;
+                UGameplayStatics::ApplyDamage(HitActor, DamageAmount, PlayerController, CurrentControlledDino, UDamageType::StaticClass());
+                
+                APrimalDinoCharacter* VictimDino = Cast<APrimalDinoCharacter>(HitActor);
+                if (VictimDino && VictimDino->bIsDead)
+                {
+                    CurrentControlledDino->FoodStatus += 25.0f;
+                }
+            }
+        }
+    }
+}
+
+void ADinoCharacterBP_GlobalMod::OnKeyPressed_Z()
+{
+    CurrentControlledDino->PlayAnimation("Sleep_Idle", true);
+    PlayerController->PlayerCameraManager->StartCameraFade(0.0f, 1.0f, 2.0f, FLinearColor::Black, true);
+
+    FTimerHandle TimerHandle;
+    GetWorld()->GetTimerManager().SetTimer(TimerHandle, [this]()
+    {
+        float CurrentTime = GetWorld()->GetTimeOfDay();
+        if (CurrentTime > 18.0f || CurrentTime < 5.0f)
+        {
+            ExecuteConsoleCommand("cheat settimeofday 08:00:00");
+        }
+        else
+        {
+            ExecuteConsoleCommand("cheat settimeofday 21:00:00");
+        }
+        PlayerController->PlayerCameraManager->StartCameraFade(1.0f, 0.0f, 2.0f, FLinearColor::Black, false);
+    }, 2.0f, false);
+}
+
+void ADinoCharacterBP_GlobalMod::ExecuteFamilyMatingSearch()
+{
+    TArray<AActor*> NearbyDinos;
+    UGameplayStatics::GetActorsInRadius(GetWorld(), CurrentControlledDino->GetActorLocation(), 600.0f, NearbyDinos);
+
+    for (AActor* Actor : NearbyDinos)
+    {
+        APrimalDinoCharacter* TargetDino = Cast<APrimalDinoCharacter>(Actor);
+        if (TargetDino && TargetDino->GetClass() == CurrentControlledDino->GetClass() && TargetDino->TargetGender != CurrentControlledDino->TargetGender)
+        {
+            TargetDino->bIsMatingPartner = true;
+            UGameplayStatics::SpawnEmitterAtLocation(GetWorld(), Heart_Particle_FX, CurrentControlledDino->GetActorLocation());
+
+            FTimerHandle MatingTimer;
+            GetWorld()->GetTimerManager().SetTimer(MatingTimer, [this]()
+            {
+                APrimalDinoCharacter* BabyActor = GetWorld()->SpawnActor<APrimalDinoCharacter>(CurrentControlledDino->GetClass(), CurrentControlledDino->GetActorLocation() + FVector(50, 0, 0), FRotator::ZeroRotator);
+                BabyActor->SetCharacterAge(0.01f);
+                BabyActor->SetTamedTeam(CurrentControlledDino->TargetTeam);
+            }, 30.0f, false);
+            break;
+        }
+    }
+}
+#include "DinoCharacterBP_GlobalMod.h"
+
+void ADinoCharacterBP_GlobalMod::OnKeyPressed_X()
+{
+    if (CurrentControlledDino && !CurrentControlledDino->bIsDead)
+    {
+        CurrentControlledDino->PlayAnimation("Sit_Idle", true);
+    }
+}
+
+void ADinoCharacterBP_GlobalMod::OnKeyPressed_B()
+{
+    if (CurrentControlledDino->GetDinoSize() <= 1)
+    {
+        FVector TraceStart = CurrentControlledDino->GetActorLocation();
+        FVector TraceEnd = TraceStart - FVector(0, 0, 300);
+        FHitResult Hit;
+
+        if (GetWorld()->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility))
+        {
+            ABurrowActor* BurrowActor = GetWorld()->SpawnActor<ABurrowActor>(ABurrowActor::StaticClass(), Hit.Location, Hit.Normal.Rotation());
+            CurrentControlledDino->AttachToActor(BurrowActor, FAttachmentTransformRules::SnapToTargetIncludingScale);
+            CurrentControlledDino->SetActorHiddenInGame(true);
+            bIsInsideBurrow = true;
+        }
+    }
+}
+
+void ADinoCharacterBP_GlobalMod::OnKeyPress_Button_C()
+{
+    if (CurrentControlledDino->IsA(ARex_Character_BP::StaticClass()))
+    {
+        CurrentControlledDino->PlayAnimation("Rex_Roar_Almighty");
+        CurrentControlledDino->PlaySound("Rex_Roar_Audio");
+
+        TArray<AActor*> Targets;
+        UGameplayStatics::GetActorsInRadius(GetWorld(), CurrentControlledDino->GetActorLocation(), 3000.0f, Targets);
+
+        for (AActor* Actor : Targets)
+        {
+            AHuman_NPC_Bot* VictimBot = Cast<AHuman_NPC_Bot>(Actor);
+            if (VictimBot)
+            {
+                VictimBot->PlayAnimation("Human_Fear_Cower");
+                VictimBot->DropCurrentWeapon();
+                VictimBot->AddStamina(-100.0f);
+            }
+            APrimalDinoCharacter* VictimDino = Cast<APrimalDinoCharacter>(Actor);
+            if (VictimDino && VictimDino->GetDinoSize() < 3) VictimDino->ApplyBuff(Buff_Fear_PAD, 10.0f);
+        }
+    }
+}
+#include "Human_NPC_AI_Controller.h"
+
+void AHuman_NPC_AI_Controller::OnMapInitialLoad()
+{
+    for (int i = 0; i < 100; i++)
+    {
+        FVector RandomPoint = UNavigationSystemV1::GetRandomReachablePointInNavMesh(GetWorld(), MapBoundsOrigin, 50000.0f);
+        GetWorld()->SpawnActor<AHuman_NPC_Bot>(AHuman_NPC_Bot::StaticClass(), RandomPoint, FRotator::ZeroRotator);
+    }
+}
+
+void AHuman_NPC_AI_Controller::OnSeeCharacter(AActor* PerceivedActor)
+{
+    APrimalDinoCharacter* Dino = Cast<APrimalDinoCharacter>(PerceivedActor);
+    if (!Dino) return;
+
+    if (Dino->bIsGlowCreature)
+    {
+        SetAIState("Stunned_By_Beauty");
+        StopCurrentMovement();
+        PlayAnimation("Human_Clap_Hands");
+        SetTargetAggro(nullptr);
+        MoveToActor(Dino, 120.0f);
+        SetAIState("Absolute_Priority_Passive_Taming");
+        return;
+    }
+
+    float DangerRating = Dino->GetDinoThreatLevel();
+    bool bIsFriendlyToHuman = Dino->CheckRelationshipWithNPC(this);
+
+    if (DangerRating >= 4.0f && !bIsFriendlyToHuman)
+    {
+        SetAIState("Panic_Flee");
+        MoveToLocation(EscapePointFromRex);
+        DropCurrentWeapon();
+        return;
+    }
+
+    if (bIsFriendlyToHuman && Dino->bAllowRiding)
+    {
+        UClass* RequiredSaddle = Dino->GetRequiredSaddleItemClass();
+        if (RequiredSaddle && !Dino->bHasSaddleEquipped)
+        {
+            while (!NPC_Inventory->HasItems(RequiredSaddle))
+            {
+                ExecuteHarvestResourcesRoutine();
+            }
+            NPC_Inventory->CraftItem(RequiredSaddle);
+            Dino->EquipSaddle(RequiredSaddle);
+        }
+        MoveToActor(Dino, 100.0f);
+        ExecuteConsoleCommand("ForceRideDino");
+        return;
+    }
+
+    if (DangerRating <= 1.0f)
+    {
+        MoveToActor(Dino, 80.0f);
+        if (Dino->IsPlayingAnimation("Otter_GiveItem") || Dino->IsPlayingAnimation("SmallDino_GiveItem"))
+        {
+            UClass* ItemToTransfer = Dino->GetCustomSpeciesItem(); 
+            TransferItem(Dino->Inventory, This->Inventory, ItemToTransfer);
+            IncreaseRelationshipPoints(Dino, 25);
+        }
+    }
+}
